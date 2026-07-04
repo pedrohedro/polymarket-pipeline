@@ -49,11 +49,28 @@ cp .env.example .env
 Add your keys to `.env`:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...         # Required
+CLASSIFIER_ENGINE=auto               # auto | anthropic | openai | local
+ANTHROPIC_API_KEY=sk-ant-...         # Required for the Claude engine
+OPENAI_API_KEY=...                   # Optional — alternative LLM engine
 TWITTER_BEARER_TOKEN=...             # Optional — real-time news stream
 TELEGRAM_BOT_TOKEN=...               # Optional — channel monitoring
 POLYMARKET_API_KEY=...               # Optional — live trading only
 ```
+
+### Classification Engines (No paid API required)
+
+The classifier is pluggable via `CLASSIFIER_ENGINE`:
+
+| Engine | Needs API key? | Notes |
+|---|---|---|
+| `auto` (default) | No | Uses Claude if `ANTHROPIC_API_KEY` is set, otherwise falls back to `local` |
+| `anthropic` | Yes | Claude (best accuracy) |
+| `openai` | Yes | GPT via OpenAI (`OPENAI_MODEL`, default `gpt-4o-mini`) |
+| `local` | **No** | Offline heuristic — runs the whole pipeline with no API key or network |
+
+Set `CLASSIFIER_ENGINE=local` to run everything (`watch`, `backtest`, `dashboard`)
+end to end without any LLM spend. It is less accurate than an LLM, but fully
+deterministic and free — ideal for development and testing.
 
 ### Verify
 

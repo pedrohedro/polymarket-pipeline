@@ -6,6 +6,17 @@ load_dotenv()
 # --- Anthropic ---
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
+# --- OpenAI (optional alternative classification engine) ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# --- Classification engine selection ---
+# "auto"      -> use anthropic if a key is set, otherwise fall back to the local engine
+# "anthropic" -> force Claude (requires ANTHROPIC_API_KEY)
+# "openai"    -> force OpenAI (requires OPENAI_API_KEY)
+# "local"     -> offline heuristic engine, no API key or network required
+CLASSIFIER_ENGINE = os.getenv("CLASSIFIER_ENGINE", "auto").lower()
+
 # --- Polymarket CLOB ---
 POLYMARKET_API_KEY = os.getenv("POLYMARKET_API_KEY", "")
 POLYMARKET_API_SECRET = os.getenv("POLYMARKET_API_SECRET", "")
