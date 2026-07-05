@@ -174,10 +174,14 @@ def cmd_verify(args):
     if not env_exists:
         all_good = False
 
-    # 4. Anthropic API key
+    # 4. Classification engine
     import config
+    from classifier import resolve_engine
+    engine = resolve_engine()
+    console.print(f"  [bright_green]PASS[/bright_green]  Classifier engine: [bold]{engine}[/bold] (CLASSIFIER_ENGINE={config.CLASSIFIER_ENGINE})")
+
     has_key = bool(config.ANTHROPIC_API_KEY) and config.ANTHROPIC_API_KEY != "sk-ant-..."
-    if has_key:
+    if engine == "anthropic":
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -190,9 +194,21 @@ def cmd_verify(args):
         except Exception as e:
             console.print(f"  [red]FAIL[/red]  Anthropic API key — {type(e).__name__}: {e}")
             all_good = False
+    elif engine == "openai":
+        if bool(config.OPENAI_API_KEY):
+            console.print(f"  [bright_green]PASS[/bright_green]  OpenAI API key set (model: {config.OPENAI_MODEL})")
+        else:
+            console.print(f"  [red]FAIL[/red]  OpenAI API key not set")
+            all_good = False
+    elif engine == "codex":
+        from classifier import codex_available
+        if codex_available():
+            console.print(f"  [bright_green]PASS[/bright_green]  Codex CLI authenticated (ChatGPT OAuth, no API key)")
+        else:
+            console.print(f"  [red]FAIL[/red]  Codex CLI not installed or not logged in — run: codex login")
+            all_good = False
     else:
-        console.print(f"  [red]FAIL[/red]  Anthropic API key not set")
-        all_good = False
+        console.print(f"  [dim]SKIP[/dim]  No LLM API key needed — local heuristic engine active")
 
     # 5. News scraper (RSS)
     try:
