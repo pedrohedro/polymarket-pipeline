@@ -11,9 +11,13 @@ Engines (selected via config.CLASSIFIER_ENGINE):
 """
 from __future__ import annotations
 
+import os
 import json
 import time
+import shutil
 import logging
+import tempfile
+import subprocess
 from dataclasses import dataclass
 
 import config
@@ -24,13 +28,34 @@ log = logging.getLogger(__name__)
 
 _PLACEHOLDER_KEYS = {"", "sk-ant-...", "sk-..."}
 
+# Cached result of the (relatively slow) Codex CLI availability probe.
+_codex_available_cache: bool | None = None
+
 
 def _has_key(key: str) -> bool:
     return bool(key) and key not in _PLACEHOLDER_KEYS
 
 
+def codex_available() -> bool:
+    """True if the Codex CLI is installed AND authenticated (via `codex login`)."""
+    global _codex_available_cache
+    if _codex_available_cache is None:
+        if shutil.which(config.CODEX_BIN) is None:
+            _codex_available_cache = False
+        else:
+            try:
+                r = subprocess.run(
+                    [config.CODEX_BIN, "login", "status"],
+                    capture_output=True, timeout=15,
+                )
+                _codex_available_cache = r.returncode == 0
+            except Exception:
+                _codex_available_cache = False
+    return _codex_available_cache
+
+
 def resolve_engine() -> str:
-    """Resolve the effective engine name, honoring 'auto' and missing keys."""
+    """Resolve the effective engine name, honoring 'auto' and missing credentials."""
     engine = config.CLASSIFIER_ENGINE
     if engine == "auto":
         if _has_key(config.ANTHROPIC_API_KEY):
@@ -38,14 +63,20 @@ def resolve_engine() -> str:
         if _has_key(config.OPENAI_API_KEY):
             return "openai"
         return "local"
-    # Explicit engines gracefully fall back to local if their key is missing.
+    # Explicit engines gracefully fall back to local if their credentials are missing.
     if engine == "anthropic" and not _has_key(config.ANTHROPIC_API_KEY):
         log.warning("[classifier] CLASSIFIER_ENGINE=anthropic but no API key; using local engine.")
         return "local"
     if engine == "openai" and not _has_key(config.OPENAI_API_KEY):
         log.warning("[classifier] CLASSIFIER_ENGINE=openai but no API key; using local engine.")
         return "local"
-    if engine not in ("anthropic", "openai", "local"):
+    if engine == "codex" and not codex_available():
+        log.warning(
+            "[classifier] CLASSIFIER_ENGINE=codex but Codex CLI is missing or not logged in "
+            "(run `codex login`); using local engine."
+        )
+        return "local"
+    if engine not in ("anthropic", "openai", "codex", "local"):
         log.warning(f"[classifier] Unknown CLASSIFIER_ENGINE '{engine}'; using local engine.")
         return "local"
     return engine
@@ -153,6 +184,48 @@ def _classify_openai(prompt: str, start: float) -> Classification:
     return _normalize(result, config.OPENAI_MODEL, start)
 
 
+def _classify_codex(prompt: str, start: float) -> Classification:
+    """Classify via the Codex CLI (ChatGPT OAuth subscription, no API key).
+
+    Runs `codex exec` non-interactively in a read-only sandbox and reads the
+    agent's final message (the JSON answer) from a temp file.
+    """
+    fd, out_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        cmd = [
+            config.CODEX_BIN, "exec",
+            "--sandbox", "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--color", "never",
+            "-o", out_path,
+        ]
+        if config.CODEX_MODEL:
+            cmd += ["-m", config.CODEX_MODEL]
+        cmd.append(prompt + "\n\nReturn ONLY the raw JSON object, no prose, no code fences.")
+
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=config.CODEX_TIMEOUT,
+        )
+        with open(out_path, "r") as fh:
+            text = fh.read().strip()
+        if not text:
+            # Fall back to stdout if the last-message file is empty.
+            text = proc.stdout.strip()
+        if not text:
+            raise RuntimeError(f"empty Codex output (rc={proc.returncode}): {proc.stderr[-300:]}")
+
+        result = _extract_json(text)
+        model = f"codex:{config.CODEX_MODEL}" if config.CODEX_MODEL else "codex"
+        return _normalize(result, model, start)
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+
 def _classify_local(headline: str, market: Market, start: float) -> Classification:
     result = local_classifier.classify(headline, market.question, market.yes_price)
     return _normalize(result, "local-heuristic", start)
@@ -177,6 +250,8 @@ def classify(headline: str, market: Market, source: str = "unknown") -> Classifi
             return _classify_anthropic(prompt, start)
         if engine == "openai":
             return _classify_openai(prompt, start)
+        if engine == "codex":
+            return _classify_codex(prompt, start)
         # Should not happen — resolve_engine guarantees a valid value.
         return _classify_local(headline, market, start)
 

@@ -66,11 +66,39 @@ The classifier is pluggable via `CLASSIFIER_ENGINE`:
 | `auto` (default) | No | Uses Claude if `ANTHROPIC_API_KEY` is set, otherwise falls back to `local` |
 | `anthropic` | Yes | Claude (best accuracy) |
 | `openai` | Yes | GPT via OpenAI (`OPENAI_MODEL`, default `gpt-4o-mini`) |
+| `codex` | **No (OAuth)** | Codex CLI using your ChatGPT subscription — no API key |
 | `local` | **No** | Offline heuristic — runs the whole pipeline with no API key or network |
 
 Set `CLASSIFIER_ENGINE=local` to run everything (`watch`, `backtest`, `dashboard`)
 end to end without any LLM spend. It is less accurate than an LLM, but fully
 deterministic and free — ideal for development and testing.
+
+#### Codex engine (ChatGPT OAuth, no API key)
+
+Use your ChatGPT plan (Plus/Pro/Business) instead of a pay-per-token API key:
+
+```bash
+# 1. Install the Codex CLI (one time)
+npm install -g @openai/codex
+
+# 2. Sign in with ChatGPT (OAuth) — no API key needed
+codex login            # opens a browser; use `codex login --device-auth` on headless boxes
+
+# 3. Point the pipeline at Codex
+CLASSIFIER_ENGINE=codex python cli.py watch
+```
+
+Under the hood each classification runs `codex exec` non-interactively in a
+read-only sandbox and reads back a JSON verdict. Notes:
+
+- **No API key** — it reuses the OAuth credentials in `~/.codex/auth.json`.
+- Optional: `CODEX_MODEL` to pick a model, `CODEX_TIMEOUT` (seconds) per call.
+- Slower than a direct API call (it spins up the CLI agent per request), so it is
+  best for local runs and testing rather than the sub-5s latency target.
+- OpenAI's docs recommend API keys for automation; use subscription/OAuth auth
+  only if that fits your account's terms.
+- If the CLI is missing or not logged in, the pipeline automatically falls back to
+  the `local` engine.
 
 ### Verify
 

@@ -10,10 +10,18 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+# --- Codex CLI (OAuth / ChatGPT subscription — no API key) ---
+# Uses a locally-installed Codex CLI authenticated via `codex login` (Sign in with
+# ChatGPT). No API key required; classification runs through `codex exec`.
+CODEX_BIN = os.getenv("CODEX_BIN", "codex")
+CODEX_MODEL = os.getenv("CODEX_MODEL", "")  # empty -> use Codex's configured default
+CODEX_TIMEOUT = float(os.getenv("CODEX_TIMEOUT", "60"))
+
 # --- Classification engine selection ---
 # "auto"      -> use anthropic if a key is set, otherwise fall back to the local engine
 # "anthropic" -> force Claude (requires ANTHROPIC_API_KEY)
 # "openai"    -> force OpenAI (requires OPENAI_API_KEY)
+# "codex"     -> Codex CLI via ChatGPT OAuth subscription (no API key; requires `codex login`)
 # "local"     -> offline heuristic engine, no API key or network required
 CLASSIFIER_ENGINE = os.getenv("CLASSIFIER_ENGINE", "auto").lower()
 

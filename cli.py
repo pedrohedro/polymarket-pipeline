@@ -200,6 +200,13 @@ def cmd_verify(args):
         else:
             console.print(f"  [red]FAIL[/red]  OpenAI API key not set")
             all_good = False
+    elif engine == "codex":
+        from classifier import codex_available
+        if codex_available():
+            console.print(f"  [bright_green]PASS[/bright_green]  Codex CLI authenticated (ChatGPT OAuth, no API key)")
+        else:
+            console.print(f"  [red]FAIL[/red]  Codex CLI not installed or not logged in — run: codex login")
+            all_good = False
     else:
         console.print(f"  [dim]SKIP[/dim]  No LLM API key needed — local heuristic engine active")
 
