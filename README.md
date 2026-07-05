@@ -27,6 +27,30 @@ V2 inverts all three:
 
 ## Setup (2 minutes)
 
+### Quickstart with Make (recommended)
+
+One command does everything — installs deps, authenticates, and starts operating:
+
+```bash
+make dev      # setup + Codex login (ChatGPT OAuth) + run in DRY-RUN (no real money)
+make prod     # same, but LIVE trading with real money (asks for confirmation)
+make local    # run fully offline with the heuristic engine (no login, no API key)
+```
+
+Other targets: `make setup`, `make auth`, `make verify`, `make dashboard`,
+`make backtest`, `make trades`, `make stats`, `make clean`.
+
+Pick the classification engine with `ENGINE` (default `codex`):
+
+```bash
+make dev ENGINE=codex        # ChatGPT subscription via OAuth (no API key)
+make dev ENGINE=local        # offline heuristic
+make dev ENGINE=anthropic    # Claude API key
+```
+
+`make dev`/`make prod` auto-run `codex login` only when `ENGINE=codex` and you are
+not already authenticated.
+
 ### One-Command Setup
 
 ```bash
