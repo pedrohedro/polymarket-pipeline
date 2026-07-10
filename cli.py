@@ -156,7 +156,7 @@ def cmd_verify(args):
 
     # 2. Dependencies
     deps_ok = True
-    for mod in ["anthropic", "feedparser", "httpx", "rich", "dotenv", "websockets", "tweepy", "aiohttp"]:
+    for mod in ["feedparser", "httpx", "rich", "dotenv", "websockets", "tweepy", "aiohttp"]:
         try:
             __import__(mod)
         except ImportError:
@@ -174,47 +174,33 @@ def cmd_verify(args):
     if not env_exists:
         all_good = False
 
-    # 4. Classification engine
+    # 4. AI provider
     import config
-    from classifier import resolve_engine
-    engine = resolve_engine()
-    console.print(f"  [bright_green]PASS[/bright_green]  Classifier engine: [bold]{engine}[/bold] (CLASSIFIER_ENGINE={config.CLASSIFIER_ENGINE})")
+    from ai_provider import check_provider, complete_json
 
-    has_key = bool(config.ANTHROPIC_API_KEY) and config.ANTHROPIC_API_KEY != "sk-ant-..."
-    if engine == "anthropic":
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-            client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=10,
-                messages=[{"role": "user", "content": "Say OK"}],
-            )
-            console.print(f"  [bright_green]PASS[/bright_green]  Anthropic API key (verified)")
-        except Exception as e:
-            console.print(f"  [red]FAIL[/red]  Anthropic API key — {type(e).__name__}: {e}")
-            all_good = False
-    elif engine == "openai":
-        if bool(config.OPENAI_API_KEY):
-            console.print(f"  [bright_green]PASS[/bright_green]  OpenAI API key set (model: {config.OPENAI_MODEL})")
-        else:
-            console.print(f"  [red]FAIL[/red]  OpenAI API key not set")
-            all_good = False
-    elif engine == "codex":
-        from classifier import codex_available
-        if codex_available():
-            console.print(f"  [bright_green]PASS[/bright_green]  Codex CLI authenticated (ChatGPT OAuth, no API key)")
-        else:
-            console.print(f"  [red]FAIL[/red]  Codex CLI not installed or not logged in — run: codex login")
-            all_good = False
+    provider = check_provider()
+    if provider.ok:
+        console.print(f"  [bright_green]PASS[/bright_green]  AI provider ({provider.label}) — {provider.detail}")
     else:
-        console.print(f"  [dim]SKIP[/dim]  No LLM API key needed — local heuristic engine active")
+        console.print(f"  [red]FAIL[/red]  AI provider ({provider.label}) — {provider.detail}")
+        all_good = False
+
+    if getattr(args, "ai_call", False) and provider.ok:
+        try:
+            complete_json('Respond with ONLY valid JSON: {"ok": true}', max_tokens=30, temperature=0)
+            console.print(f"  [bright_green]PASS[/bright_green]  AI provider live call")
+        except Exception as e:
+            console.print(f"  [red]FAIL[/red]  AI provider live call — {type(e).__name__}: {e}")
+            all_good = False
 
     # 5. News scraper (RSS)
     try:
         from scraper import scrape_rss
         items = scrape_rss(config.RSS_FEEDS[0], 12)
-        console.print(f"  [bright_green]PASS[/bright_green]  RSS scraper ({len(items)} headlines)")
+        if items:
+            console.print(f"  [bright_green]PASS[/bright_green]  RSS scraper ({len(items)} headlines)")
+        else:
+            console.print(f"  [yellow]WARN[/yellow]  RSS scraper returned 0 headlines")
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  RSS scraper — {e}")
 
@@ -236,9 +222,14 @@ def cmd_verify(args):
     try:
         from markets import fetch_active_markets
         mkts = fetch_active_markets(limit=5)
-        console.print(f"  [bright_green]PASS[/bright_green]  Polymarket API ({len(mkts)} markets)")
+        if mkts:
+            console.print(f"  [bright_green]PASS[/bright_green]  Polymarket API ({len(mkts)} markets)")
+        else:
+            console.print(f"  [red]FAIL[/red]  Polymarket API returned 0 markets")
+            all_good = False
     except Exception as e:
-        console.print(f"  [yellow]WARN[/yellow]  Polymarket API — {e}")
+        console.print(f"  [red]FAIL[/red]  Polymarket API — {e}")
+        all_good = False
 
     # 9. Niche market filter
     try:
@@ -246,7 +237,10 @@ def cmd_verify(args):
         all_m = fetch_active_markets(limit=100)
         cat = filter_by_categories(all_m)
         niche = [m for m in cat if config.MIN_VOLUME_USD <= m.volume <= config.MAX_VOLUME_USD]
-        console.print(f"  [bright_green]PASS[/bright_green]  Niche filter ({len(niche)} markets in range)")
+        if niche:
+            console.print(f"  [bright_green]PASS[/bright_green]  Niche filter ({len(niche)} markets in range)")
+        else:
+            console.print(f"  [yellow]WARN[/yellow]  Niche filter found 0 markets in range")
     except Exception as e:
         console.print(f"  [yellow]WARN[/yellow]  Niche filter — {e}")
 
@@ -432,6 +426,7 @@ def main():
 
     # verify
     p_verify = sub.add_parser("verify", help="Check API keys and connections")
+    p_verify.add_argument("--ai-call", action="store_true", help="Make a small live request to the configured AI provider")
     p_verify.set_defaults(func=cmd_verify)
 
     # scrape

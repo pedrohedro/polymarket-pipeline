@@ -21,7 +21,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             market_id TEXT NOT NULL,
             market_question TEXT NOT NULL,
-            claude_score REAL NOT NULL,
+            claude_score REAL NOT NULL, -- legacy name; stores provider-agnostic AI score
             market_price REAL NOT NULL,
             edge REAL NOT NULL,
             side TEXT NOT NULL,
@@ -109,7 +109,7 @@ def _migrate_v2_columns(conn):
 def log_trade(
     market_id: str,
     market_question: str,
-    claude_score: float,
+    ai_score: float,
     market_price: float,
     edge: float,
     side: str,
@@ -133,7 +133,7 @@ def log_trade(
             news_source, classification, materiality,
             news_latency_ms, classification_latency_ms, total_latency_ms)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (market_id, market_question, claude_score, market_price, edge,
+        (market_id, market_question, ai_score, market_price, edge,
          side, amount_usd, order_id, status, reasoning, headlines,
          news_source, classification, materiality,
          news_latency_ms, classification_latency_ms, total_latency_ms),
@@ -234,7 +234,10 @@ def get_recent_trades(limit: int = 20) -> list[dict]:
         "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?", (limit,)
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    trades = [dict(r) for r in rows]
+    for trade in trades:
+        trade["ai_score"] = trade.get("claude_score", 0.0)
+    return trades
 
 
 def get_recent_news_events(limit: int = 20) -> list[dict]:

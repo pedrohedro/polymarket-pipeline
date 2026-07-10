@@ -1,6 +1,6 @@
 """
 News-to-market matching — routes breaking news to relevant active markets.
-Two strategies: fast keyword matching + semantic Claude matching for ambiguous cases.
+Fast keyword/category matching keeps the AI provider focused on classification.
 """
 from __future__ import annotations
 

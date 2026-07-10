@@ -11,7 +11,7 @@ from news_stream import NewsEvent
 @dataclass
 class Signal:
     market: Market
-    claude_score: float
+    ai_score: float
     market_price: float
     edge: float
     side: str  # "YES" or "NO"
@@ -29,13 +29,13 @@ class Signal:
 
 def detect_edge(
     market: Market,
-    claude_score: float,
+    ai_score: float,
     reasoning: str = "",
     headlines: str = "",
 ) -> Signal | None:
-    """V1: Compare Claude's confidence against market price."""
+    """V1: Compare AI confidence against market price."""
     market_price = market.yes_price
-    edge = claude_score - market_price
+    edge = ai_score - market_price
 
     if abs(edge) < config.EDGE_THRESHOLD:
         return None
@@ -51,7 +51,7 @@ def detect_edge(
 
     return Signal(
         market=market,
-        claude_score=claude_score,
+        ai_score=ai_score,
         market_price=market_price,
         edge=raw_edge,
         side=side,
@@ -102,7 +102,7 @@ def detect_edge_v2(
 
     return Signal(
         market=market,
-        claude_score=classification.materiality,
+        ai_score=classification.materiality,
         market_price=market_price,
         edge=edge,
         side=side,
