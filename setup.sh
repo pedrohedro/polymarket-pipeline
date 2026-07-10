@@ -62,9 +62,52 @@ else
     echo -e "${BOLD}Let's configure your API keys.${NC}"
     echo ""
 
-    # Anthropic
-    echo -e "${YELLOW}1. Anthropic API Key${NC} (required — get one at console.anthropic.com)"
-    read -p "   Enter your Anthropic API key: " ANTHROPIC_KEY
+    # AI provider
+    echo -e "${YELLOW}1. AI Provider${NC} (codex, openai, openrouter, anthropic, generic)"
+    read -p "   Provider [codex]: " AI_PROVIDER
+    AI_PROVIDER=${AI_PROVIDER:-codex}
+    AI_MODEL=""
+    AI_API_KEY=""
+    AI_BASE_URL=""
+    OPENAI_KEY=""
+    OPENROUTER_KEY=""
+    ANTHROPIC_KEY=""
+
+    case "$AI_PROVIDER" in
+        codex)
+            if command -v codex &> /dev/null; then
+                if codex login status &> /dev/null; then
+                    echo -e "   ${GREEN}✓${NC} Codex CLI is authenticated"
+                else
+                    echo -e "   ${YELLOW}!${NC} Run 'codex login' before starting the pipeline"
+                fi
+            else
+                echo -e "   ${YELLOW}!${NC} Codex CLI not found. Install it or choose another provider in .env"
+            fi
+            read -p "   Codex model override (or press Enter for Codex default): " AI_MODEL
+            ;;
+        openai)
+            read -p "   Model name (example: gpt-4.1-mini): " AI_MODEL
+            read -p "   OpenAI API key: " OPENAI_KEY
+            ;;
+        openrouter)
+            read -p "   Model name (example: openai/gpt-4.1-mini): " AI_MODEL
+            read -p "   OpenRouter API key: " OPENROUTER_KEY
+            ;;
+        anthropic)
+            read -p "   Model name: " AI_MODEL
+            read -p "   Anthropic API key: " ANTHROPIC_KEY
+            ;;
+        generic)
+            read -p "   OpenAI-compatible base URL (example: http://localhost:11434/v1): " AI_BASE_URL
+            read -p "   Model name: " AI_MODEL
+            read -p "   API key (or press Enter if not required): " AI_API_KEY
+            ;;
+        *)
+            echo -e "   ${YELLOW}!${NC} Unknown provider. Falling back to codex."
+            AI_PROVIDER="codex"
+            ;;
+    esac
     echo ""
 
     # Twitter (optional)
@@ -101,8 +144,32 @@ else
 
     # Write .env
     cat > .env << ENVEOF
-# Anthropic (required)
+# AI Provider
+AI_PROVIDER=${AI_PROVIDER}
+AI_MODEL=${AI_MODEL}
+AI_API_KEY=${AI_API_KEY}
+AI_BASE_URL=${AI_BASE_URL}
+AI_TIMEOUT=60
+AI_MAX_TOKENS=500
+AI_TEMPERATURE=0.1
+
+# Codex CLI/OAuth provider
+CODEX_BIN=codex
+CODEX_MODEL=${AI_MODEL}
+CODEX_PROFILE=
+CODEX_TIMEOUT=60
+
+# OpenAI-compatible providers
+OPENAI_API_KEY=${OPENAI_KEY}
+OPENAI_MODEL=${AI_MODEL}
+OPENROUTER_API_KEY=${OPENROUTER_KEY}
+OPENROUTER_MODEL=${AI_MODEL}
+OPENROUTER_SITE_URL=
+OPENROUTER_APP_NAME=Polymarket-Pipeline
+
+# Anthropic provider
 ANTHROPIC_API_KEY=${ANTHROPIC_KEY}
+ANTHROPIC_MODEL=${AI_MODEL}
 
 # Twitter API v2 (optional — real-time news)
 TWITTER_BEARER_TOKEN=${TWITTER_KEY}

@@ -209,19 +209,19 @@ def run_pipeline(
         console.print(f"   Relevant headlines: {len(relevant_news)}")
 
         score_result = score_market(market, relevant_news)
-        claude_score = score_result["confidence"]
+        ai_score = score_result["confidence"]
         reasoning = score_result["reasoning"]
-        console.print(f"   Claude score: {claude_score:.2f}  (market: {market.yes_price:.2f})")
+        console.print(f"   AI score: {ai_score:.2f}  (market: {market.yes_price:.2f})")
 
         headlines_str = "\n".join(n.headline for n in relevant_news[:5])
-        signal = detect_edge(market, claude_score, reasoning, headlines_str)
+        signal = detect_edge(market, ai_score, reasoning, headlines_str)
 
         if signal:
             edge_pct = signal.edge * 100
             console.print(f"   [green bold]SIGNAL: {signal.side} | Edge: {edge_pct:.1f}% | Size: ${signal.bet_amount}[/green bold]")
             signals.append(signal)
         else:
-            edge = abs(claude_score - market.yes_price)
+            edge = abs(ai_score - market.yes_price)
             console.print(f"   [dim]No edge (diff: {edge:.2f}, threshold: {config.EDGE_THRESHOLD})[/dim]")
 
         time.sleep(0.5)

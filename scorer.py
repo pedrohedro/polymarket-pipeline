@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import json
-
-import anthropic
-
 import config
+from ai_provider import complete_json
 from scraper import NewsItem
 from markets import Market
 
-
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 SCORING_PROMPT = """You are a prediction market analyst. Your job is to estimate the probability that a specific market question will resolve YES, based on recent news headlines.
 
@@ -37,7 +32,7 @@ Respond with ONLY valid JSON in this exact format:
 
 
 def score_market(market: Market, news: list[NewsItem]) -> dict:
-    """Score a market question against recent news using Claude."""
+    """Score a market question against recent news using the configured AI provider."""
     headlines_text = "\n".join(
         f"[{i}] [{item.source}] ({item.age_hours():.1f}h ago) {item.headline}"
         for i, item in enumerate(news)
@@ -58,31 +53,14 @@ def score_market(market: Market, news: list[NewsItem]) -> dict:
     )
 
     try:
-        response = client.messages.create(
-            model=config.CLAUDE_MODEL,
-            max_tokens=500,
-            temperature=0.2,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text.strip()
-
-        # Extract JSON from response (handle markdown code blocks)
-        if "```" in text:
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-
-        result = json.loads(text)
-        result["confidence"] = max(0.0, min(1.0, float(result["confidence"])))
+        result = complete_json(prompt, max_tokens=500, temperature=0.2)
+        result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 0.5))))
+        if not isinstance(result.get("relevant_headlines"), list):
+            result["relevant_headlines"] = []
+        if not isinstance(result.get("reasoning"), str):
+            result["reasoning"] = ""
         return result
 
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        return {
-            "confidence": 0.5,
-            "reasoning": f"Parsing error: {e}",
-            "relevant_headlines": [],
-        }
     except Exception as e:
         return {
             "confidence": 0.5,
