@@ -36,6 +36,7 @@ class MarketWatcher:
     def __init__(self):
         self.snapshots: dict[str, MarketSnapshot] = {}
         self.tracked_markets: list[Market] = []
+        self._asset_index: dict[str, tuple[str, str]] = {}
         self._refresh_interval = 300  # refresh market list every 5 min
         self._ws_connected = False
         self.stats = {
@@ -83,11 +84,26 @@ class MarketWatcher:
             for stale_id in existing_ids - new_ids:
                 del self.snapshots[stale_id]
 
+            self._rebuild_asset_index()
             self.stats["market_refreshes"] += 1
             log.info(f"[watcher] Tracking {len(self.tracked_markets)} niche markets")
 
         except Exception as e:
             log.warning(f"[watcher] Market refresh error: {e}")
+
+    def _rebuild_asset_index(self):
+        """Map each CLOB token/asset ID back to its condition and outcome."""
+        self._asset_index = {}
+        for condition_id, snap in self.snapshots.items():
+            for token in snap.market.tokens:
+                token_id = str(token.get("token_id") or "")
+                if not token_id:
+                    continue
+                outcome = str(token.get("outcome") or "").upper()
+                self._asset_index[token_id] = (condition_id, outcome)
+
+    def _asset_ids(self) -> list[str]:
+        return list(self._asset_index.keys())
 
     async def _connect_websocket(self):
         """Connect to Polymarket WebSocket for live price updates."""
@@ -99,59 +115,112 @@ class MarketWatcher:
 
         while True:
             try:
+                asset_ids = self._asset_ids()
+                if not asset_ids:
+                    log.info("[watcher] No token IDs available for WebSocket subscription")
+                    await asyncio.sleep(30)
+                    continue
+
                 async with websockets.connect(config.POLYMARKET_WS_HOST) as ws:
                     self._ws_connected = True
                     log.info("[watcher] WebSocket connected")
 
-                    # Subscribe to tracked markets
-                    for market in self.tracked_markets:
-                        for token in market.tokens:
-                            tid = token.get("token_id")
-                            if tid:
-                                sub = {"type": "subscribe", "channel": "price", "market": tid}
-                                await ws.send(json.dumps(sub))
+                    sub = {
+                        "assets_ids": asset_ids,
+                        "type": "market",
+                        "custom_feature_enabled": True,
+                    }
+                    await ws.send(json.dumps(sub))
 
                     # Listen for updates
                     while True:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=10)
                             self.stats["ws_messages"] += 1
-                            data = json.loads(msg)
+                            if isinstance(msg, bytes):
+                                msg = msg.decode("utf-8", errors="replace")
+                            if msg in ("PONG", "ping"):
+                                if msg == "ping":
+                                    await ws.send("pong")
+                                continue
+                            if not msg.strip():
+                                continue
+                            try:
+                                data = json.loads(msg)
+                            except json.JSONDecodeError:
+                                log.debug(f"[watcher] Ignoring non-JSON WebSocket message: {msg[:80]}")
+                                continue
                             self._handle_ws_message(data)
                         except asyncio.TimeoutError:
-                            # Send ping
-                            await ws.ping()
+                            await ws.send("PING")
 
             except Exception as e:
                 self._ws_connected = False
                 log.warning(f"[watcher] WebSocket error: {e}, reconnecting in 5s")
                 await asyncio.sleep(5)
 
-    def _handle_ws_message(self, data: dict):
+    def _handle_ws_message(self, data: dict | list):
         """Process a WebSocket price update."""
-        msg_type = data.get("type", "")
-        if msg_type not in ("price_change", "last_trade_price"):
+        if isinstance(data, list):
+            for item in data:
+                self._handle_ws_message(item)
+            return
+        if not isinstance(data, dict):
             return
 
-        market_id = data.get("market", data.get("condition_id", ""))
-        price = data.get("price")
-
-        if not market_id or price is None:
+        msg_type = data.get("event_type") or data.get("type", "")
+        if msg_type == "price_change":
+            for change in data.get("price_changes") or []:
+                asset_id = str(change.get("asset_id") or "")
+                price = change.get("price")
+                if asset_id and price is not None:
+                    self._update_snapshot_price(asset_id, price)
             return
 
-        # Find matching snapshot
-        for cid, snap in self.snapshots.items():
-            token_ids = [t.get("token_id", "") for t in snap.market.tokens]
-            if market_id in token_ids or market_id == cid:
-                now = datetime.now(timezone.utc)
-                elapsed = (now - snap.last_update).total_seconds()
-                snap.prev_price = snap.last_price
-                snap.last_price = float(price)
-                snap.last_update = now
-                if elapsed > 0:
-                    snap.momentum = (snap.last_price - snap.prev_price) / (elapsed / 60)
-                self.stats["price_updates"] += 1
-                break
+        if msg_type == "last_trade_price":
+            asset_id = str(data.get("asset_id") or "")
+            price = data.get("price")
+            if asset_id and price is not None:
+                self._update_snapshot_price(asset_id, price)
+            return
+
+        if msg_type == "best_bid_ask":
+            asset_id = str(data.get("asset_id") or "")
+            best_bid = data.get("best_bid")
+            best_ask = data.get("best_ask")
+            if not asset_id or best_bid is None or best_ask is None:
+                return
+            try:
+                price = (float(best_bid) + float(best_ask)) / 2
+            except (TypeError, ValueError):
+                return
+            self._update_snapshot_price(asset_id, price)
+
+    def _update_snapshot_price(self, asset_id: str, raw_price) -> None:
+        """Update a market snapshot from a YES/NO CLOB token price."""
+        mapping = self._asset_index.get(asset_id)
+        if not mapping:
+            return
+        condition_id, outcome = mapping
+        snap = self.snapshots.get(condition_id)
+        if not snap:
+            return
+        try:
+            token_price = float(raw_price)
+        except (TypeError, ValueError):
+            return
+
+        yes_price = 1.0 - token_price if outcome == "NO" else token_price
+        yes_price = max(0.0, min(1.0, yes_price))
+
+        now = datetime.now(timezone.utc)
+        elapsed = (now - snap.last_update).total_seconds()
+        snap.prev_price = snap.last_price
+        snap.last_price = yes_price
+        snap.last_update = now
+        if elapsed > 0:
+            snap.momentum = (snap.last_price - snap.prev_price) / (elapsed / 60)
+        self.stats["price_updates"] += 1
 
     async def _polling_fallback(self):
         """Poll Gamma API for price updates when WebSocket unavailable."""
