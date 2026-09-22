@@ -25,12 +25,19 @@ from scraper import scrape_all
 import logger
 
 TARGET_USD = 15.0
-POLL_SECONDS = 60
+POLL_SECONDS = 45
 STATE_PATH = Path("/tmp/agent_pipeline/paper_state.json")
 LOG_PATH = Path("/tmp/agent_pipeline/paper_run.log")
 STATUS_PATH = Path("/tmp/agent_pipeline/status.txt")
 GAMMA = "https://gamma-api.polymarket.com"
-MAX_OPEN_POSITIONS = 8
+MAX_OPEN_POSITIONS = 15
+# Many small wins > one big trade
+PAPER_BET_USD = 5.0
+PAPER_MATERIALITY = 0.50
+TAKE_PROFIT_USD = 0.40          # bank ~$0.40+ wins
+TAKE_PROFIT_PCT = 0.05          # or +5% on the stake
+STOP_LOSS_USD = -1.50           # cut losers so capital rotates
+MAX_HOLD_CYCLES = 40            # force rotate stale positions
 
 
 def log(msg: str) -> None:
@@ -39,10 +46,14 @@ def log(msg: str) -> None:
 
 
 def write_status(total: float, state: dict) -> None:
+    wins = state.get("wins", 0)
+    losses = state.get("losses", 0)
     STATUS_PATH.write_text(
         f"total_pnl={total:.2f}\ntarget={TARGET_USD:.2f}\n"
         f"realized={state['realized_pnl']:.2f}\nopen={len(state['positions'])}\n"
-        f"trades={state['trades']}\ncycles={state['cycles']}\n"
+        f"trades={state['trades']}\nwins={wins}\nlosses={losses}\n"
+        f"cycles={state['cycles']}\n"
+        f"mode=many_small_wins bet=${PAPER_BET_USD:.2f}\n"
         f"updated={datetime.now(timezone.utc).isoformat()}\n",
         encoding="utf-8",
     )
@@ -294,12 +305,19 @@ def agent_classify(headline: str, question: str) -> Classification:
 
 def load_state() -> dict:
     if STATE_PATH.exists():
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        state.setdefault("wins", 0)
+        state.setdefault("losses", 0)
+        state.setdefault("closed", [])
+        return state
     return {
-        "positions": {},  # cid -> {side, entry, amount, shares, question, opened_at}
+        "positions": {},  # cid -> {side, entry, amount, question, opened_at, open_cycle}
         "realized_pnl": 0.0,
         "cycles": 0,
         "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "closed": [],
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -339,21 +357,9 @@ def open_or_add(state: dict, market: Market, side: str, amount: float, headline:
     cid = market.condition_id
     entry_yes = market.yes_price
     if cid in state["positions"]:
-        # already in — skip pyramiding for paper simplicity
         log(f"skip add (already open): {market.question[:60]}")
         return
 
-    event = NewsEvent(
-        headline=headline,
-        source="agent/paper",
-        url="",
-        published_at=datetime.now(timezone.utc),
-        received_at=datetime.now(timezone.utc),
-        latency_ms=40,
-    )
-    # Re-build classification was already accepted; create a passthrough signal via detect
-    # by calling execute through a crafted path: use Classification we already validated.
-    # Here we only log via execute_trade after detect_edge_v2 in caller.
     state["positions"][cid] = {
         "side": side,
         "entry": entry_yes,
@@ -361,28 +367,54 @@ def open_or_add(state: dict, market: Market, side: str, amount: float, headline:
         "question": market.question,
         "headline": headline[:200],
         "opened_at": datetime.now(timezone.utc).isoformat(),
+        "open_cycle": state.get("cycles", 0),
     }
     state["trades"] += 1
 
 
+def close_position(state: dict, cid: str, pnl: float, yes: float, reason: str) -> None:
+    pos = state["positions"].pop(cid)
+    state["realized_pnl"] += pnl
+    if pnl >= 0:
+        state["wins"] = int(state.get("wins", 0)) + 1
+    else:
+        state["losses"] = int(state.get("losses", 0)) + 1
+    state.setdefault("closed", []).append(
+        {
+            "question": pos["question"][:80],
+            "pnl": round(pnl, 2),
+            "reason": reason,
+            "entry": pos["entry"],
+            "exit_yes": yes,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    # keep closed history bounded
+    state["closed"] = state["closed"][-50:]
+    tag = "WIN" if pnl >= 0 else "LOSS"
+    log(
+        f"{tag}/{reason} pnl=${pnl:+.2f} realized=${state['realized_pnl']:+.2f} "
+        f"(wins={state['wins']} losses={state['losses']}) | {pos['question'][:55]}"
+    )
+
+
 def maybe_take_profit(state: dict, price_cache: dict[str, float]) -> None:
-    """Realize paper gains on positions that are clearly up."""
-    to_close = []
+    """Bank small wins often; cut losers; rotate stale positions."""
+    to_close: list[tuple[str, float, float, str]] = []
     for cid, pos in state["positions"].items():
         yes = price_cache.get(cid)
         if yes is None:
             continue
         pnl = position_mtm(pos, yes)
-        # lock gains early so capital can rotate into new paper signals
-        if pnl >= 2.0 or pnl >= 0.12 * float(pos["amount"]):
-            to_close.append((cid, pnl, yes))
-    for cid, pnl, yes in to_close:
-        pos = state["positions"].pop(cid)
-        state["realized_pnl"] += pnl
-        log(
-            f"TAKE PROFIT cid={cid[:10]}… pnl=${pnl:+.2f} "
-            f"entry_yes={pos['entry']:.3f} now={yes:.3f} | {pos['question'][:55]}"
-        )
+        age = state.get("cycles", 0) - int(pos.get("open_cycle", 0))
+        if pnl >= TAKE_PROFIT_USD or pnl >= TAKE_PROFIT_PCT * float(pos["amount"]):
+            to_close.append((cid, pnl, yes, "tp"))
+        elif pnl <= STOP_LOSS_USD:
+            to_close.append((cid, pnl, yes, "sl"))
+        elif age >= MAX_HOLD_CYCLES and abs(pnl) >= 0.05:
+            to_close.append((cid, pnl, yes, "rotate"))
+    for cid, pnl, yes, reason in to_close:
+        close_position(state, cid, pnl, yes, reason)
 
 
 def cycle(state: dict) -> float:
@@ -431,6 +463,28 @@ def cycle(state: dict) -> float:
                 best[market.condition_id] = (cls, item, market)
 
     for cid, (cls, item, market) in best.items():
+        if cls.direction == "neutral" or cls.materiality < PAPER_MATERIALITY:
+            continue
+        if cid in state["positions"]:
+            continue
+        if len(state["positions"]) >= MAX_OPEN_POSITIONS:
+            log("max open positions — waiting for small TPs to free slots")
+            break
+
+        # Paper edge (same idea as detect_edge_v2, but small size + softer materiality)
+        if cls.direction == "bullish":
+            if market.yes_price > 0.85:
+                continue
+            side = "YES"
+            edge = cls.materiality * (1.0 - market.yes_price)
+        else:
+            if market.yes_price < 0.15:
+                continue
+            side = "NO"
+            edge = cls.materiality * market.yes_price
+        if edge < config.EDGE_THRESHOLD:
+            continue
+
         event = NewsEvent(
             headline=item.headline,
             source=f"agent/{item.source}",
@@ -440,20 +494,36 @@ def cycle(state: dict) -> float:
             latency_ms=50,
         )
         signal = detect_edge_v2(market, cls, event)
-        if not signal:
-            continue
-        if cid in state["positions"]:
-            continue
-        if len(state["positions"]) >= MAX_OPEN_POSITIONS:
-            log("max open positions reached — waiting for MTM/take-profit")
-            break
+        # Even if default threshold blocks, we already validated paper rules above
+        if signal is None:
+            from edge import Signal
+
+            signal = Signal(
+                market=market,
+                ai_score=cls.materiality,
+                market_price=market.yes_price,
+                edge=edge,
+                side=side,
+                bet_amount=PAPER_BET_USD,
+                reasoning=cls.reasoning,
+                headlines=item.headline,
+                news_source=event.source,
+                classification=cls.direction,
+                materiality=cls.materiality,
+                news_latency_ms=event.latency_ms,
+                classification_latency_ms=cls.latency_ms,
+                total_latency_ms=event.latency_ms + cls.latency_ms,
+            )
+        else:
+            signal.bet_amount = PAPER_BET_USD
+
         result = execute_trade(signal)
         log(
             f"OPEN {result['status']} {signal.side} ${signal.bet_amount} "
             f"edge={signal.edge:.1%} mat={cls.materiality:.2f} | {market.question[:70]}"
         )
         if result["status"] == "dry_run":
-            open_or_add(state, market, signal.side, signal.bet_amount, item.headline)
+            open_or_add(state, market, signal.side, PAPER_BET_USD, item.headline)
 
     # refresh MTM after opens
     for cid in list(state["positions"].keys()):
@@ -470,7 +540,8 @@ def cycle(state: dict) -> float:
     total = realized + unreal
     log(
         f"PnL realized=${realized:+.2f} unreal=${unreal:+.2f} TOTAL=${total:+.2f} "
-        f"target=${TARGET_USD:.2f} open_pos={len(state['positions'])} trades={state['trades']}"
+        f"target=${TARGET_USD:.2f} open={len(state['positions'])} "
+        f"wins={state.get('wins', 0)} losses={state.get('losses', 0)} trades={state['trades']}"
     )
     for cid, pos in state["positions"].items():
         yes = price_cache.get(cid)
@@ -493,7 +564,11 @@ def main() -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     # seed open position from prior agent trade if state empty
     state = load_state()
-    log(f"START paper loop target=${TARGET_USD} poll={POLL_SECONDS}s DRY_RUN={config.DRY_RUN}")
+    log(
+        f"START paper loop target=${TARGET_USD} via many small wins "
+        f"(bet=${PAPER_BET_USD}, tp=${TAKE_PROFIT_USD}/+{TAKE_PROFIT_PCT:.0%}) "
+        f"poll={POLL_SECONDS}s DRY_RUN={config.DRY_RUN}"
+    )
 
     while True:
         try:
