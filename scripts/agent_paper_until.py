@@ -580,7 +580,26 @@ def main() -> None:
 
         if total >= TARGET_USD:
             log(f"TARGET REACHED TOTAL=${total:+.2f}")
-            save_state({**state, "finished_at": datetime.now(timezone.utc).isoformat(), "final_pnl": total})
+            done = {
+                "final_pnl": total,
+                "realized": state.get("realized_pnl", 0),
+                "wins": state.get("wins", 0),
+                "losses": state.get("losses", 0),
+                "trades": state.get("trades", 0),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+            save_state({**state, **done})
+            write_status(total, state)
+            Path("/tmp/agent_pipeline/TARGET_REACHED").write_text(
+                json.dumps(done, indent=2),
+                encoding="utf-8",
+            )
+            Path("/tmp/agent_pipeline/NOTIFY_USER").write_text(
+                f"META BATIDA: paper PnL ${total:+.2f} "
+                f"(realized=${state.get('realized_pnl', 0):+.2f}, "
+                f"wins={state.get('wins', 0)}, losses={state.get('losses', 0)})\n",
+                encoding="utf-8",
+            )
             break
         time.sleep(POLL_SECONDS)
 
